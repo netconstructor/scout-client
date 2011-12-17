@@ -410,16 +410,19 @@ mybar=100
       scout(@client.key) # to write the initial history file. Sinatra MUST be running
       $continue_streaming = true # so the streamer will run once
       streamer=Scout::Streamer.new("http://none", "bogus_client_key", PATH_TO_DATA_FILE, [@client.plugins.first.id]+plugins.map(&:id), "bogus_streaming_key",nil) # for debugging, make last arg Logger.new(STDOUT)
-      res = Pusher::Channel.streamer_data  # via the mock_streamer call
+    end
 
-      assert res.is_a?(Hash)
-      assert res[:plugins].is_a?(Array)
-      assert_equal 4, res[:plugins].size
-      assert_equal 2, res[:plugins][0][:fields][:load]
-      assert_equal 1, res[:plugins][1][:fields][:value]
-      assert_equal 2, res[:plugins][2][:fields][:value]
-      assert_equal 1, res[:plugins][3][:fields][:value]
-    end # end of mock_pusher
+    streams = Pusher::Channel.streamer_data  # set by the mock_pusher call
+    assert streams.is_a?(Array)
+    assert_equal 1, streams.size
+    res=streams.first
+    assert res.is_a?(Hash)
+    assert res[:plugins].is_a?(Array)
+    assert_equal 4, res[:plugins].size
+    assert_equal 2, res[:plugins][0][:fields][:load]
+    assert_equal 1, res[:plugins][1][:fields][:value]
+    assert_equal 2, res[:plugins][2][:fields][:value]
+    assert_equal 1, res[:plugins][3][:fields][:value]
   end
 
   # the local plugin shouldn't report
@@ -436,13 +439,16 @@ mybar=100
     mock_pusher do
       $continue_streaming = true # so the streamer will run once
       streamer=Scout::Streamer.new("http://none", "bogus_client_key", PATH_TO_DATA_FILE, [@client.plugins.first.id], "bogus_streaming_key",nil) # for debugging, make last arg Logger.new(STDOUT)
-      res = Pusher::Channel.streamer_data # Pusher::Channel.streamer_data via the mock_streamer call
+    end
+    streams = Pusher::Channel.streamer_data  # set by the mock_pusher call
+    assert streams.is_a?(Array)
+    assert_equal 1, streams.size
+    res=streams.first
 
-      assert res.is_a?(Hash)
-      assert res[:plugins].is_a?(Array)
-      assert_equal 1, res[:plugins].size # this is NOT the local plugin, it's a regular plugin that's already there
-      assert_equal 2, res[:plugins][0][:fields][:load]
-    end # end of mock_pusher
+    assert res.is_a?(Hash)
+    assert res[:plugins].is_a?(Array)
+    assert_equal 1, res[:plugins].size # this is NOT the local plugin, it's a regular plugin that's already there
+    assert_equal 2, res[:plugins][0][:fields][:load]
   end
 
 
@@ -475,15 +481,36 @@ mybar=100
       plugin = create_plugin(@client, "memory plugin", PLUGIN_FIXTURES[:memory][:code], PLUGIN_FIXTURES[:memory][:sig])
       scout(@client.key)
       #puts YAML.load(File.read(PATH_TO_DATA_FILE))['memory'].to_yaml
+      $continue_streaming = true # so the streamer will start running
+      # for debugging, make last arg Logger.new(STDOUT)
+      Scout::Streamer.new("http://none", "bogus_client_key", PATH_TO_DATA_FILE, [plugin.id], "bogus_streaming_key",nil)
+    end
 
+    streams = Pusher::Channel.streamer_data  # set by the mock_pusher call
+    assert streams.is_a?(Array)
+    assert_equal 3, streams.size
+    res=streams.last
+    assert_equal 3, res[:plugins][0][:fields][:v], "after the two streamer runs, this plugin should report v=3 -- it increments each run"
+  end
+
+  def test_new_plugin_instance_every_streamer_run
+    mock_pusher(2) do
+      plugin = create_plugin(@client, "caching plugin", PLUGIN_FIXTURES[:caching][:code], PLUGIN_FIXTURES[:caching][:sig])
+      scout(@client.key)
       $continue_streaming = true # so the streamer will start running
       # for debugging, make last arg Logger.new(STDOUT)
       streamer=Scout::Streamer.new("http://none", "bogus_client_key", PATH_TO_DATA_FILE, [plugin.id], "bogus_streaming_key",nil)
-      res = Pusher::Channel.streamer_data # Pusher::Channel.streamer_data via the mock_pusher call
-      assert_equal 3, res[:plugins][0][:fields][:v], "after the two streamer runs, this plugin should report v=3 -- it increments each run"
     end
-  end
 
+    streams = Pusher::Channel.streamer_data  # set by the mock_pusher call
+    assert streams.is_a?(Array)
+    assert_equal 2, streams.size
+
+    # the plugin sets :v to be the current time, and caches it in a class variable. we're checking that they are NOT equal
+    assert_in_delta Time.now.to_i, streams.last[:plugins][0][:fields][:v], 5, "should be within a few seconds of now"
+    assert_in_delta Time.now.to_i, streams.first[:plugins][0][:fields][:v], 5, "should be within a few seconds of now"
+    assert_not_equal streams.first[:plugins][0][:fields][:v], streams.last[:plugins][0][:fields][:v]
+  end
 
   ######################
   ### Helper Methods ###
@@ -612,10 +639,13 @@ mybar=100
       def trigger!(event_name, data, socket=nil)
         @num_run_for_tests = @num_run_for_tests ? @num_run_for_tests+1 : 1
         # puts "in mock pusher trigger! This is run #{@num_run_for_tests} of #{$num_runs_for_mock_pusher}"
-        @@streamer_data = data
+        @@streamer_data_temp ||= Array.new
+        @@streamer_data_temp << data
         if @num_run_for_tests >= $num_runs_for_mock_pusher
           $continue_streaming=false
           @num_run_for_tests=nil
+          @@streamer_data = @@streamer_data_temp.clone
+          @@streamer_data_temp = nil
         end
       end
     end
@@ -656,6 +686,16 @@ HXu5TIQLJ/+IYHIG2E5FWcbfddR8cmJkIl4zGs93IatQNTENksRzphob7Cz8
 wBwOHDG78kJ4TWEV5NIa5rLW8y2ltthfEPCTnS8/Zxa6h0qFtNrUWiU2KKtp
 xTbJ3RgWKUnAR3YrEGB/JjjkPN2FrsDRvlClGujaYIWpWGkf+GZcpUn+QYxP
 w7/kFz29Ds4hJRg2E2cWCHPtrD4dI0p/1iwP4XsxOw==
+EOS
+      },
+      :caching=>{:code=>"class CachingPlugin < Scout::Plugin;def build_report; @v||= Time.now.to_i; report(:v=>@v);end;end",
+                 :sig=><<EOS
+zcEUdxS9h/iD/xYK1SbvTn2mi0vJzfgIkmrouzXeRbEsbcKTdOhc3nOBwUH5
+SEOvQnPKmTiN7qaRiDZJypB/ldKxG4PL8zI0kL5G3AUZcxJBfqWe82jCKpyY
+I49DWaBW4tZWM3j5T64+60ifPlKVXQMLVIYQtPTpVDMnftzfokDbBYsEhB2e
+gNnsaAL5Nar+JE2GqM7nh79IgfXOrrYLdsv4zUJfex/OrKJS53ZCRnDcvlXu
+pKFiS6IF2dJkIFlnNlYaXK5ZSXGANGY80Ji4ivz077JpuogQzrVkqHk13A1G
+dGvCQOmVn51PKtmDm5DbfZaw4j4w+1pO2+G9Qm1y+A==
 EOS
       }
   } # end of PLUGIN_FIXTURES
