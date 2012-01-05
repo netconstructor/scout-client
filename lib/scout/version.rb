@@ -1,3 +1,3 @@
 module Scout
-  VERSION = "5.4.6.alpha"
+  VERSION = "5.4.6"
 end
